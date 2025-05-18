@@ -27,6 +27,10 @@ import java.util.concurrent.Executors;
 import androidx.annotation.NonNull;
 import androidx.exifinterface.media.ExifInterface;
 
+// permissions
+import static android.Manifest.permission.READ_EXTERNAL_STORAGE;
+import static android.Manifest.permission.WRITE_EXTERNAL_STORAGE;
+
 import io.flutter.embedding.engine.plugins.FlutterPlugin;
 import io.flutter.embedding.engine.plugins.activity.ActivityAware;
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding;
@@ -51,7 +55,6 @@ public final class ImageCropPlugin implements FlutterPlugin, ActivityAware, Meth
 
     public ImageCropPlugin() {}
 
-    // Called when plugin is attached to Flutter engine
     @Override
     public void onAttachedToEngine(@NonNull FlutterPluginBinding flutterPluginBinding) {
         BinaryMessenger messenger = flutterPluginBinding.getBinaryMessenger();
@@ -59,14 +62,14 @@ public final class ImageCropPlugin implements FlutterPlugin, ActivityAware, Meth
         channel.setMethodCallHandler(this);
     }
 
-    // Called when plugin is detached from Flutter engine
     @Override
     public void onDetachedFromEngine(@NonNull FlutterPluginBinding binding) {
-        channel.setMethodCallHandler(null);
-        channel = null;
+        if (channel != null) {
+            channel.setMethodCallHandler(null);
+            channel = null;
+        }
     }
 
-    // Called when an Activity is available
     @Override
     public void onAttachedToActivity(@NonNull ActivityPluginBinding binding) {
         this.binding = binding;
@@ -74,10 +77,7 @@ public final class ImageCropPlugin implements FlutterPlugin, ActivityAware, Meth
         binding.addRequestPermissionsResultListener(this);
     }
 
-    @Override
-    public void onDetachedFromActivityForConfigChanges() {
-        // No-op
-    }
+    @Override public void onDetachedFromActivityForConfigChanges() {}
 
     @Override
     public void onReattachedToActivityForConfigChanges(@NonNull ActivityPluginBinding binding) {
@@ -92,35 +92,41 @@ public final class ImageCropPlugin implements FlutterPlugin, ActivityAware, Meth
         this.activity = null;
     }
 
-    // Handle incoming method calls from Dart
     @Override
     public void onMethodCall(MethodCall call, Result result) {
-        String method = call.method;
-        if ("cropImage".equals(method)) {
-            String path = call.argument("path");
-            double scale = call.argument("scale");
-            double left = call.argument("left");
-            double top = call.argument("top");
-            double right = call.argument("right");
-            double bottom = call.argument("bottom");
-            RectF area = new RectF((float) left, (float) top, (float) right, (float) bottom);
-            cropImage(path, area, (float) scale, result);
-        } else if ("sampleImage".equals(method)) {
-            String path = call.argument("path");
-            int maximumWidth = call.argument("maximumWidth");
-            int maximumHeight = call.argument("maximumHeight");
-            sampleImage(path, maximumWidth, maximumHeight, result);
-        } else if ("getImageOptions".equals(method)) {
-            String path = call.argument("path");
-            getImageOptions(path, result);
-        } else if ("requestPermissions".equals(method)) {
-            requestPermissions(result);
-        } else {
-            result.notImplemented();
+        switch (call.method) {
+            case "cropImage": {
+                String path = call.argument("path");
+                double scale = call.argument("scale");
+                double left = call.argument("left");
+                double top = call.argument("top");
+                double right = call.argument("right");
+                double bottom = call.argument("bottom");
+                RectF area = new RectF((float) left, (float) top, (float) right, (float) bottom);
+                cropImage(path, area, (float) scale, result);
+                break;
+            }
+            case "sampleImage": {
+                String path = call.argument("path");
+                int maxW = call.argument("maximumWidth");
+                int maxH = call.argument("maximumHeight");
+                sampleImage(path, maxW, maxH, result);
+                break;
+            }
+            case "getImageOptions": {
+                String path = call.argument("path");
+                getImageOptions(path, result);
+                break;
+            }
+            case "requestPermissions": {
+                requestPermissions(result);
+                break;
+            }
+            default:
+                result.notImplemented();
         }
     }
 
-    // Run tasks off the UI thread
     private synchronized void io(@NonNull Runnable runnable) {
         if (executor == null) {
             executor = Executors.newCachedThreadPool();
@@ -128,169 +134,132 @@ public final class ImageCropPlugin implements FlutterPlugin, ActivityAware, Meth
         executor.execute(runnable);
     }
 
-    // Run tasks on the UI thread
     private void ui(@NonNull Runnable runnable) {
-        activity.runOnUiThread(runnable);
+        if (activity != null) {
+            activity.runOnUiThread(runnable);
+        }
     }
 
-    private void cropImage(final String path, final RectF area, final float scale, final Result result) {
-        io(new Runnable() {
-            @Override
-            public void run() {
-                File srcFile = new File(path);
-                if (!srcFile.exists()) {
-                    ui(() -> result.error("INVALID", "Image source cannot be opened", null));
-                    return;
-                }
-
-                Bitmap srcBitmap = BitmapFactory.decodeFile(path, null);
-                if (srcBitmap == null) {
-                    ui(() -> result.error("INVALID", "Image source cannot be decoded", null));
-                    return;
-                }
-
-                ImageOptions options = decodeImageOptions(path);
-                if (options.isFlippedDimensions()) {
-                    Matrix transformations = new Matrix();
-                    transformations.postRotate(options.getDegrees());
-                    Bitmap oldBitmap = srcBitmap;
-                    srcBitmap = Bitmap.createBitmap(oldBitmap,
-                                                    0, 0,
-                                                    oldBitmap.getWidth(), oldBitmap.getHeight(),
-                                                    transformations, true);
-                    oldBitmap.recycle();
-                }
-
-                int width = (int) (options.getWidth() * area.width() * scale);
-                int height = (int) (options.getHeight() * area.height() * scale);
-
-                Bitmap dstBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-                Canvas canvas = new Canvas(dstBitmap);
-                Paint paint = new Paint();
-                paint.setAntiAlias(true);
-                paint.setFilterBitmap(true);
-                paint.setDither(true);
-
-                Rect srcRect = new Rect(
-                        (int) (srcBitmap.getWidth() * area.left),
-                        (int) (srcBitmap.getHeight() * area.top),
-                        (int) (srcBitmap.getWidth() * area.right),
-                        (int) (srcBitmap.getHeight() * area.bottom)
-                );
-                Rect dstRect = new Rect(0, 0, width, height);
-                canvas.drawBitmap(srcBitmap, srcRect, dstRect, paint);
-
-                try {
-                    final File dstFile = createTemporaryImageFile();
-                    compressBitmap(dstBitmap, dstFile);
-                    ui(() -> result.success(dstFile.getAbsolutePath()));
-                } catch (final IOException e) {
-                    ui(() -> result.error("INVALID", "Image could not be saved", e));
-                } finally {
-                    canvas.setBitmap(null);
-                    dstBitmap.recycle();
-                    srcBitmap.recycle();
-                }
+    private void cropImage(String path, RectF area, float scale, Result result) {
+        io(() -> {
+            File srcFile = new File(path);
+            if (!srcFile.exists()) {
+                ui(() -> result.error("INVALID", "Source cannot be opened", null));
+                return;
+            }
+            Bitmap src = BitmapFactory.decodeFile(path);
+            if (src == null) {
+                ui(() -> result.error("INVALID", "Source cannot be decoded", null));
+                return;
+            }
+            ImageOptions opts = decodeImageOptions(path);
+            if (opts.isFlippedDimensions()) {
+                Matrix m = new Matrix();
+                m.postRotate(opts.getDegrees());
+                Bitmap old = src;
+                src = Bitmap.createBitmap(old, 0, 0, old.getWidth(), old.getHeight(), m, true);
+                old.recycle();
+            }
+            int outW = (int) (opts.getWidth() * area.width() * scale);
+            int outH = (int) (opts.getHeight() * area.height() * scale);
+            Bitmap out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888);
+            Canvas c = new Canvas(out);
+            Paint p = new Paint(); p.setAntiAlias(true); p.setFilterBitmap(true); p.setDither(true);
+            Rect srcR = new Rect((int) (src.getWidth() * area.left), (int) (src.getHeight() * area.top),
+                                  (int) (src.getWidth() * area.right), (int) (src.getHeight() * area.bottom));
+            Rect dstR = new Rect(0, 0, outW, outH);
+            c.drawBitmap(src, srcR, dstR, p);
+            try {
+                File dstFile = createTemporaryImageFile();
+                compressBitmap(out, dstFile);
+                ui(() -> result.success(dstFile.getAbsolutePath()));
+            } catch (IOException e) {
+                ui(() -> result.error("INVALID", "Could not save image", e));
+            } finally {
+                out.recycle();
+                src.recycle();
             }
         });
     }
 
-    private void sampleImage(final String path, final int maximumWidth, final int maximumHeight, final Result result) {
+    private void sampleImage(String path, int maxW, int maxH, Result result) {
         io(() -> {
             File srcFile = new File(path);
             if (!srcFile.exists()) {
-                ui(() -> result.error("INVALID", "Image source cannot be opened", null));
+                ui(() -> result.error("INVALID", "Source cannot be opened", null));
                 return;
             }
-
-            ImageOptions options = decodeImageOptions(path);
-            BitmapFactory.Options bitmapOptions = new BitmapFactory.Options();
-            bitmapOptions.inSampleSize = calculateInSampleSize(options.getWidth(), options.getHeight(),
-                                                               maximumWidth, maximumHeight);
-
-            Bitmap bitmap = BitmapFactory.decodeFile(path, bitmapOptions);
-            if (bitmap == null) {
-                ui(() -> result.error("INVALID", "Image source cannot be decoded", null));
+            ImageOptions opts = decodeImageOptions(path);
+            BitmapFactory.Options decOpts = new BitmapFactory.Options();
+            decOpts.inSampleSize = calculateInSampleSize(opts.getWidth(), opts.getHeight(), maxW, maxH);
+            Bitmap bmp = BitmapFactory.decodeFile(path, decOpts);
+            if (bmp == null) {
+                ui(() -> result.error("INVALID", "Source cannot be decoded", null));
                 return;
             }
-
-            if (options.getWidth() > maximumWidth && options.getHeight() > maximumHeight) {
-                float ratio = Math.max(
-                        maximumWidth / (float) options.getWidth(),
-                        maximumHeight / (float) options.getHeight()
-                );
-                Bitmap sample = bitmap;
-                bitmap = Bitmap.createScaledBitmap(sample,
-                                                   Math.round(bitmap.getWidth() * ratio),
-                                                   Math.round(bitmap.getHeight() * ratio),
-                                                   true);
-                sample.recycle();
+            if (opts.getWidth() > maxW || opts.getHeight() > maxH) {
+                float ratio = Math.max(maxW / (float) opts.getWidth(), maxH / (float) opts.getHeight());
+                Bitmap tmp = bmp;
+                bmp = Bitmap.createScaledBitmap(tmp, Math.round(tmp.getWidth() * ratio), Math.round(tmp.getHeight() * ratio), true);
+                tmp.recycle();
             }
-
             try {
-                final File dstFile = createTemporaryImageFile();
-                compressBitmap(bitmap, dstFile);
-                copyExif(srcFile, dstFile);
-                ui(() -> result.success(dstFile.getAbsolutePath()));
-            } catch (final IOException e) {
-                ui(() -> result.error("INVALID", "Image could not be saved", e));
+                File dst = createTemporaryImageFile();
+                compressBitmap(bmp, dst);
+                copyExif(srcFile, dst);
+                ui(() -> result.success(dst.getAbsolutePath()));
+            } catch (IOException e) {
+                ui(() -> result.error("INVALID", "Could not save image", e));
             } finally {
-                bitmap.recycle();
+                bmp.recycle();
             }
         });
     }
 
     private void compressBitmap(Bitmap bitmap, File file) throws IOException {
-        OutputStream outputStream = new FileOutputStream(file);
-        try {
-            boolean compressed = bitmap.compress(Bitmap.CompressFormat.JPEG, 100, outputStream);
-            if (!compressed) {
-                throw new IOException("Failed to compress bitmap into JPEG");
+        try (OutputStream out = new FileOutputStream(file)) {
+            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 100, out)) {
+                throw new IOException("Compression failed");
             }
-        } finally {
-            try {
-                outputStream.close();
-            } catch (IOException ignore) {}
         }
     }
 
-    private int calculateInSampleSize(int width, int height, int maximumWidth, int maximumHeight) {
+    private int calculateInSampleSize(int w, int h, int maxW, int maxH) {
         int inSampleSize = 1;
-        if (height > maximumHeight || width > maximumWidth) {
-            int halfHeight = height / 2;
-            int halfWidth = width / 2;
-            while ((halfHeight / inSampleSize) >= maximumHeight && (halfWidth / inSampleSize) >= maximumWidth) {
-                inSampleSize *= 2;
+        if (h > maxH || w > maxW) {
+            int halfH = h / 2;
+            int halfW = w / 2;
+            while ((halfH / inSampleSize) >= maxH && (halfW / inSampleSize) >= maxW) {
+                inSampleSize <<= 1;
             }
         }
         return inSampleSize;
     }
 
-    private void getImageOptions(final String path, final Result result) {
+    private void getImageOptions(String path, Result result) {
         io(() -> {
-            File file = new File(path);
-            if (!file.exists()) {
-                result.error("INVALID", "Image source cannot be opened", null);
+            File f = new File(path);
+            if (!f.exists()) {
+                ui(() -> result.error("INVALID", "Source cannot be opened", null));
                 return;
             }
-            ImageOptions options = decodeImageOptions(path);
-            final Map<String, Object> properties = new HashMap<>();
-            properties.put("width", options.getWidth());
-            properties.put("height", options.getHeight());
-            ui(() -> result.success(properties));
+            ImageOptions opts = decodeImageOptions(path);
+            Map<String, Object> props = new HashMap<>();
+            props.put("width", opts.getWidth());
+            props.put("height", opts.getHeight());
+            ui(() -> result.success(props));
         });
     }
 
     private void requestPermissions(Result result) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            if (activity.checkSelfPermission(READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED &&
-                activity.checkSelfPermission(WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && activity != null) {
+            boolean granted = activity.checkSelfPermission(READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED &&
+                              activity.checkSelfPermission(WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
+            if (granted) {
                 result.success(true);
             } else {
                 permissionRequestResult = result;
-                activity.requestPermissions(
-                    new String[]{READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE}, PERMISSION_REQUEST_CODE
-                );
+                activity.requestPermissions(new String[]{READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE}, PERMISSION_REQUEST_CODE);
             }
         } else {
             result.success(true);
@@ -300,14 +269,13 @@ public final class ImageCropPlugin implements FlutterPlugin, ActivityAware, Meth
     @Override
     public boolean onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         if (requestCode == PERMISSION_REQUEST_CODE && permissionRequestResult != null) {
-            int read = getPermissionGrantResult(READ_EXTERNAL_STORAGE, permissions, grantResults);
-            int write = getPermissionGrantResult(WRITE_EXTERNAL_STORAGE, permissions, grantResults);
-            permissionRequestResult.success(
-                read == PackageManager.PERMISSION_GRANTED && write == PackageManager.PERMISSION_GRANTED
-            );
+            boolean ok = getPermissionGrantResult(READ_EXTERNAL_STORAGE, permissions, grantResults) == PackageManager.PERMISSION_GRANTED &&
+                         getPermissionGrantResult(WRITE_EXTERNAL_STORAGE, permissions, grantResults) == PackageManager.PERMISSION_GRANTED;
+            permissionRequestResult.success(ok);
             permissionRequestResult = null;
+            return true;
         }
-        return true;
+        return false;
     }
 
     private int getPermissionGrantResult(String permission, String[] permissions, int[] grantResults) {
@@ -320,61 +288,47 @@ public final class ImageCropPlugin implements FlutterPlugin, ActivityAware, Meth
     }
 
     private File createTemporaryImageFile() throws IOException {
-        File directory = activity.getCacheDir();
+        File dir = activity.getCacheDir();
         String name = "image_crop_plus_" + UUID.randomUUID();
-        return File.createTempFile(name, ".jpg", directory);
+        return File.createTempFile(name, ".jpg", dir);
     }
 
     private ImageOptions decodeImageOptions(String path) {
-        int rotationDegrees = 0;
+        int deg = 0;
         try {
             ExifInterface exif = new ExifInterface(path);
-            rotationDegrees = exif.getRotationDegrees();
+            deg = exif.getRotationDegrees();
         } catch (IOException e) {
-            Log.e("ImageCrop", "Failed to read a file " + path, e);
+            Log.e("ImageCrop", "Cannot read EXIF: " + path, e);
         }
-        BitmapFactory.Options opts = new BitmapFactory.Options();
-        opts.inJustDecodeBounds = true;
-        BitmapFactory.decodeFile(path, opts);
-        return new ImageOptions(opts.outWidth, opts.outHeight, rotationDegrees);
+        BitmapFactory.Options o = new BitmapFactory.Options();
+        o.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(path, o);
+        return new ImageOptions(o.outWidth, o.outHeight, deg);
     }
 
-    private void copyExif(File source, File destination) {
+    private void copyExif(File source, File dest) {
         try {
-            ExifInterface srcExif = new ExifInterface(source.getAbsolutePath());
-            ExifInterface dstExif = new ExifInterface(destination.getAbsolutePath());
+            ExifInterface src = new ExifInterface(source.getAbsolutePath());
+            ExifInterface dst = new ExifInterface(dest.getAbsolutePath());
             List<String> tags = Arrays.asList(
-                ExifInterface.TAG_F_NUMBER,
-                ExifInterface.TAG_EXPOSURE_TIME,
-                ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY,
-                ExifInterface.TAG_GPS_ALTITUDE,
-                ExifInterface.TAG_GPS_ALTITUDE_REF,
-                ExifInterface.TAG_FOCAL_LENGTH,
-                ExifInterface.TAG_GPS_DATESTAMP,
-                ExifInterface.TAG_WHITE_BALANCE,
-                ExifInterface.TAG_GPS_PROCESSING_METHOD,
-                ExifInterface.TAG_GPS_TIMESTAMP,
                 ExifInterface.TAG_DATETIME,
-                ExifInterface.TAG_FLASH,
+                ExifInterface.TAG_ORIENTATION,
                 ExifInterface.TAG_GPS_LATITUDE,
                 ExifInterface.TAG_GPS_LATITUDE_REF,
                 ExifInterface.TAG_GPS_LONGITUDE,
-                ExifInterface.TAG_GPS_LONGITUDE_REF,
-                ExifInterface.TAG_MAKE,
-                ExifInterface.TAG_MODEL,
-                ExifInterface.TAG_ORIENTATION
+                ExifInterface.TAG_GPS_LONGITUDE_REF
             );
-            for (String tag : tags) {
-                String attr = srcExif.getAttribute(tag);
-                if (attr != null) dstExif.setAttribute(tag, attr);
+            for (String t : tags) {
+                String val = src.getAttribute(t);
+                if (val != null) dst.setAttribute(t, val);
             }
-            dstExif.saveAttributes();
+            dst.saveAttributes();
         } catch (IOException e) {
-            Log.e("ImageCrop", "Failed to preserve Exif information", e);
+            Log.e("ImageCrop", "Failed to copy EXIF", e);
         }
     }
 
-    // Helper class to hold image dimensions and rotation
     private static final class ImageOptions {
         private final int width;
         private final int height;
@@ -386,21 +340,10 @@ public final class ImageCropPlugin implements FlutterPlugin, ActivityAware, Meth
             this.degrees = degrees;
         }
 
-        int getHeight() {
-            return isFlippedDimensions() ? width : height;
-        }
-
-        int getWidth() {
-            return isFlippedDimensions() ? height : width;
-        }
-
-        int getDegrees() {
-            return degrees;
-        }
-
-        boolean isFlippedDimensions() {
-            return degrees == 90 || degrees == 270;
-        }
+        int getWidth() { return isFlippedDimensions() ? height : width; }
+        int getHeight() { return isFlippedDimensions() ? width : height; }
+        int getDegrees() { return degrees; }
+        boolean isFlippedDimensions() { return degrees == 90 || degrees == 270; }
     }
 }
 
